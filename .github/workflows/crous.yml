@@ -1,0 +1,41 @@
+name: Crous Paris bot
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes (GitHub may run a few minutes late)
+  workflow_dispatch:         # lets you click "Run workflow" to test it
+
+permissions:
+  contents: write            # needed to save seen.json
+
+concurrency:
+  group: crous-bot
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Check Crous
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          MAX_PRICE: "600"
+          TEST_NOTIFY: ${{ github.event_name == 'workflow_dispatch' }}
+        run: python crous_bot.py
+
+      - name: Save what was already sent
+        run: |
+          git config user.name "crous-bot"
+          git config user.email "crous-bot@users.noreply.github.com"
+          git add seen.json
+          git diff --cached --quiet || (git commit -m "Update seen offers" && git push)
