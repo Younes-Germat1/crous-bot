@@ -101,13 +101,13 @@ def fetch_all():
     return all_offers, total
 
 
-def notify(title, message, click_url=None, priority=4, tags="house"):
+def notify(title, message, click_url=None, priority=5, tags="house"):
     """Send a phone notification through ntfy (JSON = accents and € work)."""
     payload = {
         "topic": NTFY_TOPIC,
         "title": title,
         "message": message,
-        "priority": priority,  # 4 = high, 3 = normal
+        "priority": priority,  # 5 = max (alarm), 3 = normal
         "tags": [tags],
     }
     if click_url:
@@ -152,7 +152,7 @@ def main():
         msg = (
             f"{o['name']}\n{o['address']}\n{o['price_text']} / mois\n"
             + " - ".join(o["details"][:3])
-            + "\nRéserve vite (connexion MesServices) !"
+            + "\nTouche cette notification pour ouvrir le logement et réserver vite !"
         )
         notify(f"🏠 Nouveau logement Crous Paris – {o['price_text']}", msg, o["url"])
         seen[f"{o['id']}|{o['price_text']}"] = o["name"]
