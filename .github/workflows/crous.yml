@@ -2,7 +2,7 @@ name: Crous Paris bot
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every 15 minutes (GitHub may run a few minutes late)
+    - cron: "*/30 * * * *"   # every 30 minutes (GitHub may run a few minutes late)
   workflow_dispatch:         # lets you click "Run workflow" to test it
 
 permissions:
