@@ -1,6 +1,6 @@
 """
 Crous Paris bot
-- Checks trouverunlogement.lescrous.fr for student housing in Paris
+- Checks trouverunlogement.lescrous.fr and monlogementetudiant.beta.gouv.fr (Paris)
 - Keeps only offers at or below MAX_PRICE
 - Sends a phone notification with ntfy for every NEW offer
 - Remembers what it already sent in seen.json
@@ -22,6 +22,10 @@ SEARCH_URL = os.environ.get(
     "SEARCH_URL",
     "https://trouverunlogement.lescrous.fr/tools/48/search"
     "?bounds=2.224122_48.902156_2.4697602_48.8155755",
+)
+MLE_URL = os.environ.get(
+    "MLE_URL",
+    "https://monlogementetudiant.beta.gouv.fr/trouver-un-logement-etudiant/ville/paris",
 )
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")  # set as a GitHub secret
 # ----------------------------------------------------------
@@ -101,6 +105,53 @@ def fetch_all():
     return all_offers, total
 
 
+MLE_BASE = "https://monlogementetudiant.beta.gouv.fr"
+
+
+def parse_mle_page(html):
+    """monlogementetudiant.beta.gouv.fr: residences with a real availability count."""
+    soup = BeautifulSoup(html, "html.parser")
+    offers = []
+    for card in soup.select('div.fr-card[id^="accomodation-"]'):
+        link = card.select_one(".fr-card__title a")
+        if not link:
+            continue
+        desc = card.select_one(".fr-card__desc")
+        desc_text = desc.get_text(" ", strip=True) if desc else ""
+        m = re.search(r"(\d+)\s*Disponibilit", desc_text, re.I)
+        available = int(m.group(1)) if m else 0
+        price_badge = card.select_one(".fr-card__header .fr-badge")
+        price_text = price_badge.get_text(" ", strip=True) if price_badge else ""
+        place = card.select_one(".fr-tag")
+        href = link.get("href", "")
+        offers.append(
+            {
+                "id": card.get("id", "").replace("accomodation-", ""),
+                "name": link.get_text(strip=True),
+                "address": place.get_text(strip=True) if place else "",
+                "details": [desc_text.split(str(available))[0].strip()] if desc_text else [],
+                "available": available,
+                "price_text": price_text,
+                "price": parse_price(price_text),
+                "url": MLE_BASE + href if href.startswith("/") else href,
+            }
+        )
+    return offers
+
+
+def fetch_mle():
+    all_offers = []
+    for page in range(1, 6):
+        url = MLE_URL + (f"?page={page}" if page > 1 else "")
+        r = requests.get(url, headers=HEADERS, timeout=30)
+        r.raise_for_status()
+        offers = [o for o in parse_mle_page(r.text) if o["id"] not in {x["id"] for x in all_offers}]
+        if not offers:
+            break
+        all_offers.extend(offers)
+    return all_offers
+
+
 def notify(title, message, click_url=None, priority=5, tags="house"):
     """Send a phone notification through ntfy (JSON = accents and € work)."""
     payload = {
@@ -125,8 +176,8 @@ def main():
     try:
         offers, total = fetch_all()
     except Exception as e:  # site down or blocked
-        print("Error while checking the site:", e)
-        sys.exit(0)
+        print("Crous error:", e)
+        offers, total = [], 0
 
     print(f"Site says {total} housing(s); parsed {len(offers)} card(s).")
 
@@ -141,9 +192,9 @@ def main():
                 tags="warning",
             )
             seen["_layout_warning_sent"] = True
-            SEEN_FILE.write_text(json.dumps(seen, ensure_ascii=False, indent=2))
-        return
-    seen.pop("_layout_warning_sent", None)
+        offers = []
+    else:
+        seen.pop("_layout_warning_sent", None)
 
     cheap = [o for o in offers if o["price"] is not None and o["price"] <= MAX_PRICE]
     new = [o for o in cheap if f"{o['id']}|{o['price_text']}" not in seen]
@@ -159,13 +210,38 @@ def main():
         print("NEW:", o["name"], o["price_text"], o["url"])
 
     if not new:
-        print(f"Nothing new at or below {MAX_PRICE:.0f} EUR.")
+        print(f"Crous: nothing new at or below {MAX_PRICE:.0f} EUR.")
+
+    # ---- Site 2: monlogementetudiant.beta.gouv.fr ----
+    mle_ok = 0
+    try:
+        mle = fetch_mle()
+        print(f"MonLogementEtudiant: {len(mle)} residence(s) read.")
+        mle_ok = len(mle)
+        for o in mle:
+            if o["available"] <= 0 or o["price"] is None or o["price"] > MAX_PRICE:
+                continue
+            key = f"mle|{o['id']}|{o['available']}"
+            if key in seen:
+                continue
+            msg = (
+                f"{o['name']} – {o['address']}\n{o['price_text']} / mois\n"
+                f"{o['available']} logement(s) disponible(s)\n"
+                "Touche cette notification pour voir la résidence et faire ta demande vite !"
+            )
+            notify(f"🏠 Logement étudiant dispo à Paris – {o['price_text']}", msg, o["url"])
+            seen[key] = o["name"]
+            new.append(o)
+            print("NEW (MLE):", o["name"], o["price_text"], o["available"], o["url"])
+    except Exception as e:
+        print("MonLogementEtudiant error:", e)
 
     # Manual test run -> always send a "bot OK" notification
     if os.environ.get("TEST_NOTIFY") == "true":
         notify(
             "✅ Crous bot fonctionne",
-            f"Paris : {total} logement(s) affiché(s), {len(cheap)} à {MAX_PRICE:.0f} € ou moins. "
+            f"Crous Paris : {total} logement(s) affiché(s), {len(cheap)} à {MAX_PRICE:.0f} € ou moins. "
+            f"MonLogementEtudiant : {mle_ok} résidence(s) lue(s). "
             "Tu recevras une alerte dès qu'un nouveau apparaît.",
             SEARCH_URL,
             priority=3,
